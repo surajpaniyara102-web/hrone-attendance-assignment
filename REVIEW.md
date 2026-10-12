@@ -1,0 +1,19 @@
+# REVIEW.md
+
+List every defect you found in the starter `app/main.py` (helpers and endpoints).
+
+| # | Where (function / line) | What is wrong | How you'd notice it (test, input, or symptom) | How you fixed it |
+|---|---|---|---|---|
+| 1 | `compute_late_minutes` | Computes minutes strictly if `minutes > 10`. At `09:40:01` (10m 1s late), integer division truncated it to 10 minutes and returned 0 instead of 10. Also used naive date comparison. | Punch-in at `09:40:01` returned `late_minutes: 0` instead of `10` (violating R2). | Checked difference in seconds: if `diff_seconds > 600`, returned `floor(diff_seconds / 60)`. |
+| 2 | `compute_work_hours` | Uses Python's built-in `round()`, which performs banker's (round-half-to-even) rounding instead of round half-up. | Work duration of 4.545 hours rounded to 4.54 instead of 4.55 (violating R4/R8). | Implemented `Decimal.quantize(..., rounding=ROUND_HALF_UP)`. |
+| 3 | `compute_overtime` | Assumes the shift end always falls on `date_str`, breaking overnight shifts (e.g., 22:00 to 06:00). Also did not enforce the minimum 30-minute threshold. | Punch-out at 06:15 for overnight shift computed negative or huge overtime. 15 minutes of overtime gave 15 instead of 0. | Added overnight check: if `shift_end <= shift_start`, shift end is on next calendar day; enforced `>= 1800` seconds minimum. |
+| 4 | `create_employee` | Did not validate `shift_start != shift_end`. Also did not enforce unique index in DB; used `find_one` check-then-insert. | Concurrent POST with same `emp_code` created duplicates; identical shifts returned 201 instead of 422. | Added 422 check for equal shift times, created DB unique index, and caught `DuplicateKeyError` returning 409. |
+| 5 | `list_employees` | Skip was calculated as `page * page_size` (skipping page 1). `total` counted the entire collection ignoring `department` filter. | `GET /employees?page=1` returned items from page 2; filtered request returned wrong total. | Calculated `skip = (page - 1) * page_size` and passed filter query to `count_documents(q)`. |
+| 6 | `punch_in` | Uses local `datetime.now()` and naive timestamps instead of UTC/IST conversion. Record date ignores R1 overnight shifts. | Overnight shift punching in at 05:30 IST logged under current day instead of shift start day. | Implemented `get_shift_instants()` adhering strictly to R1. |
+| 7 | `punch_in` | Concurrency race: used `find_one` check-then-insert. Also returned internal MongoDB `id`. | Two concurrent punch-ins both succeeded with 201. Contract forbids `id` in response. | Created composite unique index on `(emp_code, date)`, handled `DuplicateKeyError` -> 409, and removed `id`. |
+| 8 | `list_attendance` | Loaded all documents into memory using `list(...)` and sorted in Python. Fast-path fail on 100k records. | Querying 100k records caused high memory usage and timeouts. | Used MongoDB cursor `.sort([("date", -1), ("emp_code", 1)]).skip().limit()` directly. |
+| 9 | `list_attendance` | Did not validate `date_from > date_to` with 422. | `GET /attendance?date_from=2026-07-10&date_to=2026-07-01` returned empty list with 200 instead of 422. | Added validation raising 422 when `date_from > date_to`. |
+| 10 | `/health` | Always returned `{"status": "ok"}` without checking MongoDB connection. | App returned 200 even when MongoDB was down, failing readiness probe. | Added `client.admin.command("ping")`, returning 503 on failure. |
+
+### Examined and Decided NOT a Defect:
+- **`date` and `shift_start`/`shift_end` kept as strings:** Investigated whether these should be converted to BSON Datetime. Kept as strings because the spec (`DATA_MODEL.md`) explicitly requires calendar dates (`YYYY-MM-DD`) and times (`HH:MM`) to remain plain strings to avoid unnecessary time zone distortions.
